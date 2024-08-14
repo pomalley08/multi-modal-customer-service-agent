@@ -1,6 +1,5 @@
 <!DOCTYPE html>  
 <html lang="en">  
-    
 <head>  
     <meta charset="UTF-8">  
     <meta name="viewport" content="width=device-width, initial-scale=1.0">  
@@ -10,7 +9,12 @@
 <body>  
     <video id="video" autoplay playsinline></video>  
     <button id="startButton">Start Session</button>  
+    <button id="stopButton">Stop Session</button>  
     <button id="shareScreenButton">Share Screen</button>  
+    <input type="text" id="userPrompt" placeholder="Type your prompt here...">  
+    <button id="sendButton">Send</button>  
+    <button id="micButton">&#127908;</button>  
+    <script src="https://aka.ms/csspeech/jsbrowserpackageraw"></script>  
     <script src="/static/app.js"></script>  
 </body>  
 </html>  

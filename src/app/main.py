@@ -1,15 +1,19 @@
-from fastapi import FastAPI, File, UploadFile, WebSocket  
-from fastapi.responses import HTMLResponse, JSONResponse  
+from fastapi import FastAPI, WebSocket, Request  
+from fastapi.responses import StreamingResponse, JSONResponse,HTMLResponse
+import azure.cognitiveservices.speech as speechsdk  
+
 from fastapi.staticfiles import StaticFiles  
 from fastapi.templating import Jinja2Templates  
-import azure.cognitiveservices.speech as speechsdk  
 import openai  
 import cv2  
 import numpy as np  
-from starlette.requests import Request  
 from dotenv import load_dotenv  
+from fastapi.middleware.cors import CORSMiddleware  
 import os  
 import requests  
+from fastapi import FastAPI, HTTPException  
+import json  
+import base64  
   
 # Load environment variables from .env file  
 load_dotenv()  
@@ -22,81 +26,157 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")  
   
 # Retrieve keys from environment variables  
-azure_subscription_key = os.getenv("AZURE_SUBSCRIPTION_KEY")  
-azure_region = os.getenv("AZURE_REGION")  
 azure_openai_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")  
 azure_openai_api_key = os.getenv("AZURE_OPENAI_API_KEY")  
+speech_api_key = os.getenv("SPEECH_API_KEY")  
+speech_region = os.getenv("SPEECH_REGION")  
+chat_deployment = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT")  
+client = openai.AzureOpenAI(  
+    azure_endpoint=azure_openai_endpoint,  
+    api_key=azure_openai_api_key,  
+    api_version="2024-02-01"  
+)  
   
-speech_config = speechsdk.SpeechConfig(subscription=azure_subscription_key, region=azure_region)  
+# Allow CORS  
+origins = [  
+    "http://localhost",  
+    "http://localhost:8000",  
+    "http://127.0.0.1:8000",  
+    "https://studious-tribble-jr7v797gwj6fq57w-8000.app.github.dev"  
+]  
+  
+app.add_middleware(  
+    CORSMiddleware,  
+    allow_origins=["*"],  
+    allow_credentials=True,  
+    allow_methods=["*"],  
+    allow_headers=["*"],  
+)  
+  
+# Dictionary to store user sessions  
+user_sessions = {}  
   
 @app.get("/", response_class=HTMLResponse)  
 async def get(request: Request):  
     return templates.TemplateResponse("index.html", {"request": request})  
   
-@app.post("/process_audio")  
-async def process_audio(file: UploadFile = File(...)):  
+@app.post("/process_and_synthesize")  
+async def process_and_synthesize(request: Request):  
+    data = await request.json()  
+    user_id = data.get("user_id")  
+    messages = data.get("messages")  
+    frames = data.get("frames", [])  # Get frames from the request  
+  
+    if not messages or not user_id:  
+        return JSONResponse(content={"error": "No messages or user ID provided"}, status_code=400)  
+  
+    # Retrieve user session  
+    user_session = user_sessions.get(user_id, {'images': []})  
+  
     try:  
-        audio_data = await file.read()  
-        print(f"Received audio data of length: {len(audio_data)}")  
-          
-        audio_input = speechsdk.AudioConfig(stream=speechsdk.audio.PushAudioInputStream())  
-        stream = speechsdk.audio.PushAudioInputStream()  
-        stream.write(audio_data)  
-        stream.close()  
+        # Append new frames to the user session  
+        user_session['images'].extend(frames)  
+        user_sessions[user_id] = user_session  # Update the session with new frames  
   
-        audio_config = speechsdk.audio.AudioConfig(stream=stream)  
-        recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_config)  
-        result = recognizer.recognize_once()  
-          
-        if result.reason == speechsdk.ResultReason.RecognizedSpeech:  
-            text = result.text  
-            response = await process_with_azure_openai(text)  
-            return JSONResponse(content={"text": text, "response": response})  
+        # Prepare the message content  
+        message_content = [{"type": "text", "text": messages[-1]['content']}]  
+  
+        # Append images to the message content  
+        images = user_session["images"]  
+        if len(images) > 0:  
+            message_content.append({"type": "text", "text": "here are images from the camera: "})  
+        for base64_image in user_session['images']:  
+            image_bytes = base64.b64decode(base64_image['data'])  
+            base64_image_str = base64.b64encode(image_bytes).decode('utf-8')  
+            message_content.append({  
+                "type": "image_url",  
+                "detail": "low",  
+                "image_url": {  
+                    "url": f"data:image/jpeg;base64,{base64_image_str}",  
+                },  
+            })  
+  
+        response = client.chat.completions.create(  
+            model=chat_deployment,  
+            messages=[  
+                {  
+                    "role": "user",  
+                    "content": message_content,  
+                }  
+            ],  
+        )  
+  
+        # Clear user images after sending to OpenAI  
+        user_sessions[user_id]['images'] = []  
+  
+        assistant_response = response.choices[0].message.content  
+  
+        # Set up the speech config  
+        speech_config = speechsdk.SpeechConfig(subscription=speech_api_key, region=speech_region)  
+        speech_config.speech_synthesis_language = "en-US"  
+        speech_config.speech_synthesis_voice_name = "en-US-JennyNeural"  
+  
+        # Create a pull audio output stream  
+        pull_stream = speechsdk.audio.PullAudioOutputStream()  
+        audio_config = speechsdk.audio.AudioOutputConfig(stream=pull_stream)  
+        synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=audio_config)  
+  
+        # Synthesize the text to the pull stream  
+        result = synthesizer.speak_text_async(assistant_response).get()  
+        if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:  
+            # Stream the audio data to the client  
+            def audio_stream():  
+                audio_buffer = bytes(32000)  
+                filled_size = pull_stream.read(audio_buffer)  
+                while filled_size > 0:  
+                    yield audio_buffer[:filled_size]  
+                    filled_size = pull_stream.read(audio_buffer)  
+  
+            # Create a multipart response  
+            boundary = "speech_boundary"  
+            headers = {  
+                "Content-Type": f"multipart/mixed; boundary={boundary}"  
+            }  
+  
+            def multipart_stream():  
+                # Text part  
+                yield f"--{boundary}\r\n"  
+                yield "Content-Type: application/json\r\n\r\n"  
+                yield json.dumps({"text": assistant_response})  
+                yield "\r\n"  
+  
+                # Audio part  
+                yield f"--{boundary}\r\n"  
+                yield "Content-Type: audio/wav\r\n\r\n"  
+                for chunk in audio_stream():  
+                    yield base64.b64encode(chunk).decode('utf-8')  
+                yield "\r\n"  
+  
+                # End boundary  
+                yield f"--{boundary}--\r\n"  
+  
+            return StreamingResponse(multipart_stream(), headers=headers)  
         else:  
-            return JSONResponse(content={"error": "Speech not recognized"})  
+            raise HTTPException(status_code=500, detail="Speech synthesis failed")  
+  
     except Exception as e:  
-        print(f"Error processing audio: {e}")  
-        return JSONResponse(content={"error": "Failed to process audio"}, status_code=500)  
+        print(f"Error processing text with Azure OpenAI: {e}")  
+        return JSONResponse(content={"error": "Failed to process text"}, status_code=500)  
   
-async def process_with_azure_openai(text: str):  
+@app.get("/api/get-speech-token")  
+async def get_speech_token():  
+    if not speech_api_key or not speech_region:  
+        raise HTTPException(status_code=400, detail="You forgot to add your speech key or region to the .env file.")  
+  
     headers = {  
-        "Content-Type": "application/json",  
-        "api-key": azure_openai_api_key  
+        'Ocp-Apim-Subscription-Key': speech_api_key,  
+        'Content-Type': 'application/x-www-form-urlencoded'  
     }  
   
-    data = {  
-        "prompt": text,  
-        "max_tokens": 150  
-    }  
-  
-    response = requests.post(  
-        f"{azure_openai_endpoint}/openai/deployments/text-davinci-002/completions?api-version=2022-12-01",  
-        headers=headers,  
-        json=data  
-    )  
-  
-    if response.status_code == 200:  
-        return response.json()["choices"][0]["text"].strip()  
-    else:  
-        print(f"Error with Azure OpenAI API: {response.status_code}, {response.text}")  
-        return "Error processing with Azure OpenAI"  
-  
-@app.websocket("/ws")  
-async def websocket_endpoint(websocket: WebSocket):  
-    await websocket.accept()  
-    while True:  
-        data = await websocket.receive_bytes()  
-        frame = np.frombuffer(data, np.uint8).reshape((480, 640, 3))  # Adjust shape as needed  
-        edges = analyze_frame(frame)  
-        if detect_significant_change(edges):  
-            # Send frame to Azure OpenAI  
-            pass  
-  
-def analyze_frame(frame):  
-    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)  
-    edges = cv2.Canny(gray_frame, 50, 150)  
-    return edges  
-  
-def detect_significant_change(edges):  
-    # Implement your logic to detect significant changes  
-    return np.sum(edges) > 1000  # Example threshold  
+    try:  
+        token_response = requests.post(f"https://{speech_region}.api.cognitive.microsoft.com/sts/v1.0/issueToken", headers=headers)  
+        token_response.raise_for_status()  
+        token = token_response.text  
+        return JSONResponse(content={"token": token, "region": speech_region})  
+    except requests.exceptions.RequestException as e:  
+        raise HTTPException(status_code=401, detail="There was an error authorizing your speech key.")  
