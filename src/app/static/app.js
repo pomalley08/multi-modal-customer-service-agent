@@ -19,9 +19,9 @@ const maxMessages = 10;
 const frameBuffer = []; // Buffer to store the last 5 frames  
 const maxFrames = 3;  
   
-let speechSynthesizer; // Keep a reference to the speech synthesizer  
-let player; // Define the player globally  
-let isSpeaking = false; // Track if TTS is currently speaking  
+let audioQueue = []; // Queue to store the audio chunks  
+let isPlayingAudio = false; // Track if an audio chunk is currently playing  
+let currentAudio = null; // Keep track of the currently playing audio element  
   
 startButton.addEventListener('click', async () => {  
     try {  
@@ -137,40 +137,22 @@ async function processAndSynthesize(prompt) {
         });  
   
         if (response.ok) {  
-            const boundary = response.headers.get('Content-Type').split('boundary=')[1];  
-            const reader = response.body.getReader();  
-            const decoder = new TextDecoder('utf-8');  
-            let text = '';  
-            let audioChunks = [];  
+            for await (const jsonResponse of readNDJSONStream(response.body)) {  
+                console.log("Response:", jsonResponse);  
   
-            while (true) {  
-                const { done, value } = await reader.read();  
-                if (done) break;  
-                const chunk = decoder.decode(value, { stream: true });  
-                text += chunk;  
-            }  
-  
-            const parts = text.split(`--${boundary}`);  
-            for (const part of parts) {  
-                if (part.includes('Content-Type: application/json')) {  
-                    const jsonPart = part.split('\r\n\r\n')[1];  
-                    const jsonResponse = JSON.parse(jsonPart);  
-                    console.log("Text Part:", jsonResponse);  
+                if (jsonResponse.text) {  
                     addMessageToList('assistant', jsonResponse.text);  
-                } else if (part.includes('Content-Type: audio/wav')) {  
-                    const audioPart = part.split('\r\n\r\n')[1].split('\r\n')[0];  
-                    const audioBuffer = Uint8Array.from(atob(audioPart), c => c.charCodeAt(0));  
-                    audioChunks.push(audioBuffer);  
+                }  
+  
+                if (jsonResponse.audio_data) {  
+                    console.log("receive audio data")  
+                    const audioBuffer = Uint8Array.from(atob(jsonResponse.audio_data), c => c.charCodeAt(0));  
+                    const audioBlob = new Blob([audioBuffer], { type: 'audio/wav' });  
+                    const audioUrl = URL.createObjectURL(audioBlob);  
+                    audioQueue.push(audioUrl); // Add audio to the queue  
+                    playNextAudio(); // Attempt to play the next audio chunk  
                 }  
             }  
-  
-            console.log("Audio Chunks:", audioChunks);  
-            const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });  
-            console.log("Audio Blob:", audioBlob);  
-            const audioUrl = URL.createObjectURL(audioBlob);  
-            console.log("Audio URL:", audioUrl);  
-            const audio = new Audio(audioUrl);  
-            audio.play();  
         } else {  
             console.error("Failed to process and synthesize:", response.statusText);  
         }  
@@ -179,16 +161,34 @@ async function processAndSynthesize(prompt) {
     }  
 }  
   
-// Function to stop the current speech synthesis  
-function stopSpeechSynthesis() {  
-    if (isSpeaking && player && player.internalAudio) {  
-        try {  
-            player.internalAudio.currentTime = player.internalAudio.duration; // Fast forward to the end  
-            console.log("Text-to-speech stopped.");  
-        } catch (error) {  
-            console.error("Error stopping text-to-speech:", error);  
-        }  
+function playNextAudio() {  
+    if (isPlayingAudio || audioQueue.length === 0) {  
+        return; // Return if already playing or no audio in queue  
     }  
+  
+    isPlayingAudio = true;  
+    const audioUrl = audioQueue.shift();  
+    const audio = new Audio(audioUrl);  
+    currentAudio = audio; // Set the current audio element  
+    audio.onended = () => {  
+        isPlayingAudio = false; // Mark as not playing when done  
+        currentAudio = null; // Clear the current audio element  
+        playNextAudio(); // Play next audio chunk if available  
+    };  
+    audio.play();  
+}  
+  
+function stopAndClearAudioQueue() {  
+    // Stop the currently playing audio  
+    if (currentAudio) {  
+        currentAudio.pause();  
+        currentAudio.currentTime = 0;  
+        currentAudio = null;  
+    }  
+  
+    // Clear the audio queue  
+    audioQueue = [];  
+    isPlayingAudio = false; // Ensure the flag is reset so new audio can be played  
 }  
   
 // Toggle Continuous Speech Recognition  
@@ -208,6 +208,9 @@ micButton.addEventListener('click', async () => {
         speechRecognizer.recognized = (s, e) => {  
             if (e.result.reason === speechsdk.ResultReason.RecognizedSpeech) {  
                 const audioPrompt = e.result.text;  
+  
+                // Stop the currently playing audio and clear the queue  
+                stopAndClearAudioQueue();  
   
                 addMessageToList('user', audioPrompt);  
                 processAndSynthesize(audioPrompt);  // Call the API with recognized speech text  

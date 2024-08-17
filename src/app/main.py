@@ -1,7 +1,6 @@
 from fastapi import FastAPI, WebSocket, Request  
-from fastapi.responses import StreamingResponse, JSONResponse,HTMLResponse
+from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse  
 import azure.cognitiveservices.speech as speechsdk  
-
 from fastapi.staticfiles import StaticFiles  
 from fastapi.templating import Jinja2Templates  
 import openai  
@@ -14,6 +13,7 @@ import requests
 from fastapi import FastAPI, HTTPException  
 import json  
 import base64  
+import asyncio  
   
 # Load environment variables from .env file  
 load_dotenv()  
@@ -73,95 +73,98 @@ async def process_and_synthesize(request: Request):
     # Retrieve user session  
     user_session = user_sessions.get(user_id, {'images': []})  
   
-    try:  
-        # Append new frames to the user session  
-        user_session['images'].extend(frames)  
-        user_sessions[user_id] = user_session  # Update the session with new frames  
+    # Append new frames to the user session  
+    user_session['images'].extend(frames)  
+    user_sessions[user_id] = user_session  # Update the session with new frames  
   
-        # Prepare the message content  
-        message_content = [{"type": "text", "text": messages[-1]['content']}]  
+    # Prepare the message content  
+    message_content = [{"type": "text", "text": messages[-1]['content']}]  
   
-        # Append images to the message content  
-        images = user_session["images"]  
-        if len(images) > 0:  
-            message_content.append({"type": "text", "text": "here are images from the camera: "})  
-        for base64_image in user_session['images']:  
-            image_bytes = base64.b64decode(base64_image['data'])  
-            base64_image_str = base64.b64encode(image_bytes).decode('utf-8')  
-            message_content.append({  
-                "type": "image_url",  
-                "detail": "low",  
-                "image_url": {  
-                    "url": f"data:image/jpeg;base64,{base64_image_str}",  
-                },  
-            })  
+    # Append images to the message content  
+    images = user_session["images"]  
+    if len(images) > 0:  
+        message_content.append({"type": "text", "text": "here are images from the camera: "})  
+    for base64_image in user_session['images']:  
+        image_bytes = base64.b64decode(base64_image['data'])  
+        base64_image_str = base64.b64encode(image_bytes).decode('utf-8')  
+        message_content.append({  
+            "type": "image_url",  
+            "detail": "low",  
+            "image_url": {  
+                "url": f"data:image/jpeg;base64,{base64_image_str}",  
+            },  
+        })  
   
-        response = client.chat.completions.create(  
-            model=chat_deployment,  
-            messages=[  
-                {  
-                    "role": "user",  
-                    "content": message_content,  
-                }  
-            ],  
-        )  
+    user_sessions[user_id]['images'] = []  # Clear user images after sending to OpenAI  
   
-        # Clear user images after sending to OpenAI  
-        user_sessions[user_id]['images'] = []  
+    async def stream_openai_responses():  
+        try:  
+            response = client.chat.completions.create(  
+                model=chat_deployment,  
+                messages=[{"role": "user", "content": message_content}],  
+                temperature=0,  
+                stream=True  
+            )  
+            assistant_response = ""  
+            spoken_sentence = ""  
+            sentence_level_punctuations = ['.', '?', '!', ':', ';']  
   
-        assistant_response = response.choices[0].message.content  
+            for chunk in response:  
+                if len(chunk.choices) > 0:  
+                    delta = chunk.choices[0].delta  
+                    if delta.content:  
+                        assistant_response += delta.content  
+                        print("assistance reponse ",assistant_response )
+                        # Aggregate response by sentence  
+                        spoken_sentence += delta.content  
+                        if any(punct in delta.content for punct in sentence_level_punctuations): 
+ 
+                            yield json.dumps({"text": spoken_sentence}) + "\n"  
+                              
+                            # Synthesize the accumulated sentence  
+                            speech_config = speechsdk.SpeechConfig(subscription=speech_api_key, region=speech_region)  
+                            speech_config.speech_synthesis_language = "en-US"  
+                            speech_config.speech_synthesis_voice_name = "en-US-JennyNeural"  
   
-        # Set up the speech config  
-        speech_config = speechsdk.SpeechConfig(subscription=speech_api_key, region=speech_region)  
-        speech_config.speech_synthesis_language = "en-US"  
-        speech_config.speech_synthesis_voice_name = "en-US-JennyNeural"  
+                            pull_stream = speechsdk.audio.PullAudioOutputStream()  
+                            audio_config = speechsdk.audio.AudioOutputConfig(stream=pull_stream)  
+                            synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=audio_config)  
   
-        # Create a pull audio output stream  
-        pull_stream = speechsdk.audio.PullAudioOutputStream()  
-        audio_config = speechsdk.audio.AudioOutputConfig(stream=pull_stream)  
-        synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=audio_config)  
+                            result = synthesizer.speak_text_async(spoken_sentence).get()  
+                            if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:  
+                                audio_data = base64.b64encode(result.audio_data).decode('utf-8')  
+                                print("send audio data")
+                                yield json.dumps({"audio_data": audio_data})  + "\n"  
+                            else:  
+                                raise HTTPException(status_code=500, detail="Speech synthesis failed")  
+                              
+                            spoken_sentence = ""  
   
-        # Synthesize the text to the pull stream  
-        result = synthesizer.speak_text_async(assistant_response).get()  
-        if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:  
-            # Stream the audio data to the client  
-            def audio_stream():  
-                audio_buffer = bytes(32000)  
-                filled_size = pull_stream.read(audio_buffer)  
-                while filled_size > 0:  
-                    yield audio_buffer[:filled_size]  
-                    filled_size = pull_stream.read(audio_buffer)  
+            # Yield any remaining spoken_sentence  
+            if spoken_sentence:  
+                yield json.dumps({"text": spoken_sentence}) + "\n"  
+                  
+                # Synthesize the remaining sentence  
+                speech_config = speechsdk.SpeechConfig(subscription=speech_api_key, region=speech_region)  
+                speech_config.speech_synthesis_language = "en-US"  
+                speech_config.speech_synthesis_voice_name = "en-US-JennyNeural"  
   
-            # Create a multipart response  
-            boundary = "speech_boundary"  
-            headers = {  
-                "Content-Type": f"multipart/mixed; boundary={boundary}"  
-            }  
+                pull_stream = speechsdk.audio.PullAudioOutputStream()  
+                audio_config = speechsdk.audio.AudioOutputConfig(stream=pull_stream)  
+                synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=audio_config)  
   
-            def multipart_stream():  
-                # Text part  
-                yield f"--{boundary}\r\n"  
-                yield "Content-Type: application/json\r\n\r\n"  
-                yield json.dumps({"text": assistant_response})  
-                yield "\r\n"  
+                result = synthesizer.speak_text_async(spoken_sentence).get()  
+                if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:  
+                    audio_data = base64.b64encode(result.audio_data).decode('utf-8')  
+                    yield json.dumps({"audio_data": audio_data})  
+                else:  
+                    raise HTTPException(status_code=500, detail="Speech synthesis failed")  
   
-                # Audio part  
-                yield f"--{boundary}\r\n"  
-                yield "Content-Type: audio/wav\r\n\r\n"  
-                for chunk in audio_stream():  
-                    yield base64.b64encode(chunk).decode('utf-8')  
-                yield "\r\n"  
+        except Exception as e:  
+            print(f"Error processing text with Azure OpenAI: {e}")  
+            yield json.dumps({"error": "Failed to process text"})  
   
-                # End boundary  
-                yield f"--{boundary}--\r\n"  
-  
-            return StreamingResponse(multipart_stream(), headers=headers)  
-        else:  
-            raise HTTPException(status_code=500, detail="Speech synthesis failed")  
-  
-    except Exception as e:  
-        print(f"Error processing text with Azure OpenAI: {e}")  
-        return JSONResponse(content={"error": "Failed to process text"}, status_code=500)  
+    return StreamingResponse(stream_openai_responses(), media_type="application/json")  
   
 @app.get("/api/get-speech-token")  
 async def get_speech_token():  
