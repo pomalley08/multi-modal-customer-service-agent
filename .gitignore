@@ -2,6 +2,13 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.env  
+test.py  
+test.ipynb  
+*.venv
+openai-realtime-console/
+openai-realtime-api=beta/
+
 
 # C extensions
 *.so
