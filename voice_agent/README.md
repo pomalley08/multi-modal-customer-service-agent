@@ -11,7 +11,7 @@ We'll follow 4 steps to get this example running in your own environment: pre-re
 
 ### 1. Pre-requisites
 You'll need instances of the following Azure services. You can re-use service instances you have already or create new ones.
-1. [Azure OpenAI](https://ms.portal.azure.com/#create/Microsoft.CognitiveServicesOpenAI), with 2 model deployments, one of the **gpt-4o-realtime-preview** model, and one for embeddings (e.g.text-embedding-3-large, text-embedding-3-small, or text-embedding-ada-002). Model availability per region can be found [here](https://learn.microsoft.com/en-us/azure/ai-services/openai/concepts/models#global-standard-model-availability).
+1. [Azure OpenAI](https://ms.portal.azure.com/#create/Microsoft.CognitiveServicesOpenAI), with 2 model deployments, one of the **gpt-4o-realtime-preview** model, a regular gpt-4o-mini model.
 
 ### 2. Setting up the environment
 The app needs to know which service endpoints to use for the Azure OpenAI and Azure AI Search. The following variables can be set as environment variables, or you can create a ".env" file in the "app/backend/" directory with this content.

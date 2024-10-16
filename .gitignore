@@ -9,7 +9,7 @@ test.ipynb
 openai-realtime-console/
 openai-realtime-api=beta/
 
-
+node_modules/
 # C extensions
 *.so
 
