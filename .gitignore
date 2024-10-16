@@ -6,9 +6,6 @@ __pycache__/
 test.py  
 test.ipynb  
 *.venv
-openai-realtime-console/
-openai-realtime-api=beta/
-
 node_modules/
 # C extensions
 *.so
