@@ -1,0 +1,10 @@
+fastapi  
+uvicorn  
+azure-cognitiveservices-speech  
+openai  
+numpy  
+opencv-python-headless
+jinja2 
+python-dotenv
+requests
+python-multipart
