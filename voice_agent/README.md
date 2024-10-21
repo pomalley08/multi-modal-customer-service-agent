@@ -63,6 +63,11 @@ You can run the project in your local VS Code Dev Container using the [Dev Conta
    AZURE_OPENAI_API_KEY=<your api key>
    AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-4o-mini
    AZURE_OPENAI_API_VERSION="2024-09-01-preview"
+   AZURE_OPENAI_EMB_DEPLOYMENT=<"text-embedding-ada-002" or the embedding deployment for policy question>
+   INTENT_SHIFT_API_KEY=<your api key for the custom intent detection model>
+   INTENT_SHIFT_API_URL=<your api URL for the custom intent detection model>
+   INTENT_SHIFT_API_DEPLOYMENT=<your api deployment for the custom intent detection model>
+
    ```
    To use Entra ID (your user when running locally, managed identity when deployed) simply don't set the keys.  
 5. Run this command to start the app:
