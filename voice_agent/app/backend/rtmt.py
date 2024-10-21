@@ -6,7 +6,7 @@ from typing import Any, Callable, Optional
 from aiohttp import web
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from azure.core.credentials import AzureKeyCredential
-from utility import detect_intent_change
+from utility import detect_intent_change, detect_intent_change_2
 class ToolResultDirection(Enum):
     TO_SERVER = 1
     TO_CLIENT = 2
@@ -54,12 +54,16 @@ class RTMiddleTier:
     # Typically at least the model name and system message will be set by the server
     model: Optional[str] = None
     system_message: Optional[str] = None
+    agent_name: Optional[str] = None
+    domain_description: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     disable_audio: Optional[bool] = None
     backup_system_message: Optional[str] = None
+    backup_agent_name: Optional[str] = None
+    backup_domain_description: Optional[str] = None
     backup_tools: dict[str, Tool] = {}
-    max_history_length = 5
+    max_history_length = 3
     _tools_pending = {}
     _token_provider = None
     transfer_conversation = False
@@ -77,10 +81,14 @@ class RTMiddleTier:
     async def _detect_intent_change(self):  
         # Use the accumulated history for intent detection  
         conversation = "\n".join(self.history)  
-        job_description = self.system_message  
+        job_description = self.system_message
+        agent_name = self.agent_name  
+
         print("starting intent detection")
   
-        intent = await detect_intent_change(job_description, conversation)  
+        intent = await detect_intent_change_2(agent_name, conversation)  
+        # intent = await detect_intent_change(job_description, conversation)  
+
         print("intent: ", intent)
           
         if "yes" in intent:  # Adjust condition based on actual response  
@@ -305,8 +313,15 @@ class RTMiddleTier:
                                     }  
 
                                     temp_system_message = self.system_message
+                                    temp_agent_name = self.agent_name
+                                    temp_domain_description = self.domain_description
                                     self.system_message = self.backup_system_message
+                                    self.agent_name = self.backup_agent_name
+                                    self.domain_description = self.backup_domain_description
+                                    self.backup_agent_name = temp_agent_name
+                                    self.backup_domain_description = temp_domain_description
                                     self.backup_system_message = temp_system_message
+                                
                                     temp_tools = self.tools
                                     self.tools = self.backup_tools
                                     self.backup_tools = temp_tools

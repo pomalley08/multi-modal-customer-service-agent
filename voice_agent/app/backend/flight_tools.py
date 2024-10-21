@@ -258,7 +258,10 @@ agent = load_entity('prompt.yaml', "flight_agent")
   
 def get_system_message():  
     return agent.get('persona', "")  
-  
+def get_domain_description():
+    return agent.get('domain_description', "")
+def get_agent_name():
+    return agent.get('name', "")
 # Attach tools  
 def attach_flight_tools(rtmt: RTMiddleTier) -> None:  
     for tool in agent.get('tools', []):  

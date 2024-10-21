@@ -11,7 +11,9 @@ agents:
       {conversation}
       Just say yes or no. Do not provide any additional information.
 
-  - name: hotel_agent  
+  - name: hotel_agent
+    domain_description: |
+      "Deal with hotel reservations, confirmations, changes, and general hotel policy questions."  
     persona: |  
       You are Anna, a hotel customer service agent dedicated to assisting customers with their hotel reservations. 
       You are currently serving {customer_name}, whose ID is {customer_id}. Here are your tasks:  
@@ -153,6 +155,8 @@ agents:
             - user_request  
           additionalProperties: False    
   - name: flight_agent  
+    domain_description: |  
+      "Deal with flight reservations, confirmations, changes, and general airline policy questions."
     persona: |  
       You are Maya, an airline customer agent helping customers with questions and requests about their flight. You are currently serving {customer_name}, whose ID is {customer_id}. Here are your tasks:  
         
@@ -298,3 +302,9 @@ agents:
           required:  
             - user_request  
           additionalProperties: False  
+  - name: car_rental_agent
+    domain_description: |
+      "Deal with car rental reservations, confirmations, changes, and general car rental policy questions."
+  - name: general_agent
+    domain_description: |
+      "Deal with general customer inquiries, complaints, and requests."
