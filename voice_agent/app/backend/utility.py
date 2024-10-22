@@ -64,7 +64,7 @@ allowSelfSignedHttps(True)
 async def detect_intent_change_2(current_domain, conversation): 
     start_time = time.time() 
     # Prepare the request data  
-    value = f"##current_domain:{current_domain}##conversation:{conversation}"  
+    value = f"##current_domain:{current_domain}\n##conversation:\n{conversation}"  
     data = {  
         "columns": ["conversation"],  
         "data": [[value]]  
@@ -87,6 +87,8 @@ async def detect_intent_change_2(current_domain, conversation):
         response = urllib.request.urlopen(req)  
         result = response.read() 
         result = json.loads(result)[0]
+        print("current domain ", current_domain)
+        print("conversation ", value)
         print(result)
         end_time = time.time()
         print(f"Job succeeded in {end_time - start_time:.2f} seconds.")

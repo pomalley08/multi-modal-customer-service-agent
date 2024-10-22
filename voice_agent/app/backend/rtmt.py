@@ -207,7 +207,7 @@ class RTMiddleTier:
                     transcript = message.get("transcript","")
                     print("user transcript: ", transcript)
                     if len(transcript) > 0:
-                        self.history.append("customer: "+ transcript)  
+                        self.history.append("user: "+ transcript)  
                         last_user_request= {
                             "type": "conversation.item.create",
                             "item": {
