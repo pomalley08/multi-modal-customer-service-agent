@@ -220,7 +220,7 @@ class RTMiddleTier:
                                 }]
                             }
                             }
-
+                        # todo: extend the conversation history when transfer conversation so that next agent has more context. Last request might not be sufficient
                         self.init_user_question = last_user_request
                         # Trigger intent detection
                         if self.use_classification_model:   
