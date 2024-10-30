@@ -64,35 +64,45 @@ allowSelfSignedHttps(True)
 async def detect_intent_change_2(current_domain, conversation): 
     start_time = time.time() 
     # Prepare the request data  
+# Format the data according to the ServiceInput schema  
     value = f"##current_domain:{current_domain}\n##conversation:\n{conversation}"  
     data = {  
-        "columns": ["conversation"],  
-        "data": [[value]]  
+        "input_data": {  
+            "columns": ["input_string"],  
+            "index": [0],  
+            "data": [[value]]  # Wrap value in a list to match the expected structure  
+        },  
+        "params": {}  
     }  
-    body = str.encode(json.dumps({"input_data": data}))  
-  
-  
+    
+    # Encode the data as JSON  
+    body = json.dumps(data).encode('utf-8')  
+    
+    # Check if the API key is provided  
     if not INTENT_SHIFT_API_KEY:  
         raise Exception("A key should be provided to invoke the endpoint")  
-  
+    
+    # Set the headers  
     headers = {  
         'Content-Type': 'application/json',  
-        'Authorization': ('Bearer ' + INTENT_SHIFT_API_KEY),  
+        'Authorization': f'Bearer {INTENT_SHIFT_API_KEY}',  
         'azureml-model-deployment': INTENT_SHIFT_API_DEPLOYMENT  
     }  
+    
+    # Make the request  
+    req = urllib.request.Request(INTENT_SHIFT_API_URL, body, headers=headers)  
   
-    req = urllib.request.Request(INTENT_SHIFT_API_URL, body, headers)  
   
     try:  
         response = urllib.request.urlopen(req)  
-        result = response.read() 
-        result = json.loads(result)[0]
+        result = response.read()
+        result = json.loads(result)[0]['0'].strip()
         print("current domain ", current_domain)
         print("conversation ", value)
         print(result)
         end_time = time.time()
         print(f"Job succeeded in {end_time - start_time:.2f} seconds.")
-        if result != "no_change":
+        if result != "no_change" and result!=current_domain:
             return "yes"
         else:
             return result

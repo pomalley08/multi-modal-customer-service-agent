@@ -264,6 +264,33 @@ class RTMiddleTier:
                     updated_message = json.dumps(message)
 
         return updated_message
+    async def _reinitialize_state(self, target_ws: web.WebSocketResponse):
+        print("re-initializing session state")
+        server_msg = {  
+            "type": "session.update",  
+            "session": {  
+                "turn_detection": {  
+                    "type": "server_vad"  
+                },  
+                "input_audio_transcription": {  
+                    "model": "whisper-1"  
+                }  
+            }  
+        }  
+        session = server_msg["session"]
+        if self.system_message is not None:
+            session["instructions"] = self.system_message
+        if self.temperature is not None:
+            session["temperature"] = self.temperature
+        if self.max_tokens is not None:
+            session["max_response_output_tokens"] = self.max_tokens
+        if self.disable_audio is not None:
+            session["disable_audio"] = self.disable_audio
+        session["tool_choice"] = "auto" if len(self.tools) > 0 else "none"
+        session["tools"] = [tool.schema for tool in self.tools.values()]
+        # new_msg = await self._process_message_to_server(new_msg, ws)
+        await target_ws.send_json(server_msg)
+
 
     async def _forward_messages(self, ws: web.WebSocketResponse):
         async with aiohttp.ClientSession(base_url=self.endpoint) as session:
@@ -300,17 +327,6 @@ class RTMiddleTier:
                                 await ws.send_str(new_msg)
                             else:
                                 if self.transfer_conversation and self.init_user_question:
-                                    server_msg = {  
-                                        "type": "session.update",  
-                                        "session": {  
-                                            "turn_detection": {  
-                                                "type": "server_vad"  
-                                            },  
-                                            "input_audio_transcription": {  
-                                                "model": "whisper-1"  
-                                            }  
-                                        }  
-                                    }  
 
                                     temp_system_message = self.system_message
                                     temp_agent_name = self.agent_name
@@ -328,19 +344,7 @@ class RTMiddleTier:
                                     self.transfer_conversation = False
                                     print("cancelling current response")
                                     await target_ws.send_json({"type": "response.cancel"})
-                                    session = server_msg["session"]
-                                    if self.system_message is not None:
-                                        session["instructions"] = self.system_message
-                                    if self.temperature is not None:
-                                        session["temperature"] = self.temperature
-                                    if self.max_tokens is not None:
-                                        session["max_response_output_tokens"] = self.max_tokens
-                                    if self.disable_audio is not None:
-                                        session["disable_audio"] = self.disable_audio
-                                    session["tool_choice"] = "auto" if len(self.tools) > 0 else "none"
-                                    session["tools"] = [tool.schema for tool in self.tools.values()]
-                                    # new_msg = await self._process_message_to_server(new_msg, ws)
-                                    await target_ws.send_json(server_msg)
+                                    await self._reinitialize_state(target_ws)
                                     print("updated system session with new tools and system message")
                                     server_msg = {"type":"input_audio_buffer.clear"}
                                     print("clearing audio buffer after user transfer")
@@ -351,19 +355,6 @@ class RTMiddleTier:
 
                                     await target_ws.send_json({'type': 'response.create'})
 
-                                    # print("push the model to talk")
-
-                                    # push_message =  {
-                                    # "type": "conversation.item.create"
-                                    # }
-                                    # await target_ws.send_json(push_message)
-
-
-                                    # print("trigger response from server")
-                                    # await target_ws.send_json({  
-                                    #     "type": "response.create"  
-                                    # })  
-
 
                         else:
                             print("Error: unexpected message type:", msg.type)
@@ -372,7 +363,11 @@ class RTMiddleTier:
                     await asyncio.gather(from_client_to_server(), from_server_to_client())
                 except ConnectionResetError:
                     # Ignore the errors resulting from the client disconnecting the socket
-                    pass
+                    print("ConnectionResetError")
+                    await self._reinitialize_state(target_ws)
+                except Exception as e:
+                    print("Exception:", e)
+                    await self._reinitialize_state(target_ws)
 
     async def _websocket_handler(self, request: web.Request):
         ws = web.WebSocketResponse()
