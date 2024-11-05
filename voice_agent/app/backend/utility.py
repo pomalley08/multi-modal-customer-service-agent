@@ -65,7 +65,7 @@ async def detect_intent_change_2(current_domain, conversation):
     start_time = time.time() 
     # Prepare the request data  
 # Format the data according to the ServiceInput schema  
-    value = f"##current_domain:{current_domain}\n##conversation:\n{conversation}"  
+    value = f"{conversation}"  
     data = {  
         "input_data": {  
             "columns": ["input_string"],  
@@ -102,7 +102,7 @@ async def detect_intent_change_2(current_domain, conversation):
         print(result)
         end_time = time.time()
         print(f"Job succeeded in {end_time - start_time:.2f} seconds.")
-        if result != "no_change" and result!=current_domain:
+        if result!=current_domain:
             return "yes"
         else:
             return result
