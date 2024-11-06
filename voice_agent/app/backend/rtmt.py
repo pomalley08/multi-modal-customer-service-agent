@@ -6,7 +6,7 @@ from typing import Any, Callable, Optional
 from aiohttp import web
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from azure.core.credentials import AzureKeyCredential
-from utility import detect_intent_change, detect_intent_change_2
+from utility import detect_intent_change, detect_intent, SessionState
 class ToolResultDirection(Enum):
     TO_SERVER = 1
     TO_CLIENT = 2
@@ -69,6 +69,8 @@ class RTMiddleTier:
     transfer_conversation = False
     history = []
     init_user_question = None
+    session_state = SessionState() #to backup the state of the conversation
+    session_state_key = '12345' #to be updated with the actual session id from client
 
     def __init__(self, endpoint: str, deployment: str, credentials: AzureKeyCredential | DefaultAzureCredential):
         self.endpoint = endpoint
@@ -78,20 +80,17 @@ class RTMiddleTier:
         else:
             self._token_provider = get_bearer_token_provider(credentials, "https://cognitiveservices.azure.com/.default")
             self._token_provider() # Warm up during startup so we have a token cached when the first request arrives
+        init_history = self.session_state.get(self.session_state_key)
+        if init_history:
+            self.history = init_history
     async def _detect_intent_change(self):  
-        # Use the accumulated history for intent detection  
-        conversation = "\n".join(self.history)  
-        job_description = self.system_message
-        agent_name = self.agent_name  
-
-        print("starting intent detection")
-  
-        intent = await detect_intent_change_2(agent_name, conversation)  
-        # intent = await detect_intent_change(job_description, conversation)  
-
-        print("intent: ", intent)
-          
-        if "yes" in intent:  # Adjust condition based on actual response  
+        # Use the accumulated history for intent detection
+        extracted_history = [f"{item['item']['role']}: {item['item']['content'][0]['text']}" for item in self.history]
+        print("current agent: ", self.agent_name,  "alternate agent: ", self.backup_agent_name)
+        conversation = "\n".join(extracted_history)  
+        intent = await detect_intent(conversation) 
+        print("detected intent ", intent)
+        if intent == self.backup_agent_name:  
             self.transfer_conversation = True  
 
             
@@ -155,10 +154,11 @@ class RTMiddleTier:
 
                 case "response.output_item.added":
                         
-                    if (not self.use_classification_model) and "item" in message and message["item"]["type"] == "function_call":
-                        if message["item"]["name"]=="transfer_conversation":
+                    if message["item"]["type"] == "function_call":
+                        if  message["item"]["name"]=="transfer_conversation":
                             print("detecting transfer_conversation in function calling")
-                            self.transfer_conversation = True
+                            if not self.use_classification_model:
+                                self.transfer_conversation = True
 
                         updated_message = None
 
@@ -194,7 +194,7 @@ class RTMiddleTier:
                             args = item["arguments"]
                             result = await tool.target(json.loads(args))
                         except Exception as e:
-                            result = ToolResult(str(e), ToolResultDirection.TO_SERVER)
+                            result = ToolResult(f"encountered this error, {str(e)},\n, just siliently retry a couple of times before apologizing to the customer", ToolResultDirection.TO_SERVER)
                         await server_ws.send_json({
                             "type": "conversation.item.create",
                             "item": {
@@ -237,10 +237,8 @@ class RTMiddleTier:
                 case "conversation.item.input_audio_transcription.completed":
                     ## add logic to detect intent change
                     transcript = message.get("transcript","")
-                    print("user transcript: ", transcript)
                     if len(transcript) > 0:
-                        self.history.append("user: "+ transcript)  
-                        last_user_request= {
+                        self.history.append({
                             "type": "conversation.item.create",
                             "item": {
                                 "type": "message",
@@ -251,9 +249,8 @@ class RTMiddleTier:
                                 "text": f"{transcript}"
                                 }]
                             }
-                            }
+                            })
                         # todo: extend the conversation history when transfer conversation so that next agent has more context. Last request might not be sufficient
-                        self.init_user_question = last_user_request
                         # Trigger intent detection
                         if self.use_classification_model:   
                             asyncio.create_task(self._detect_intent_change())  
@@ -265,7 +262,19 @@ class RTMiddleTier:
                 case "response.audio_transcript.done":
                     ## add logic to detect intent change
                     transcript = message.get("transcript","")
-                    self.history.append("agent: "+ transcript)  
+                    self.history.append({
+                        "type": "conversation.item.create",
+                        "item": {
+                            "type": "message",
+                            "status": "completed",
+                            "role": "assistant",
+                            "content": [{
+                            "type": "text",
+                            "text": f"{transcript}"
+                            }]
+                        }
+                        })
+
                     # Retain only the last n turns  
                     if len(self.history) > self.max_history_length:  
                         self.history.pop(0)  
@@ -303,6 +312,9 @@ class RTMiddleTier:
         print("clearing audio buffer")
         await target_ws.send_json(server_msg)
         await self._attach_instruction(target_ws)
+        if self.history:
+            for item in self.history:
+                await target_ws.send_json(item)
 
 
     async def _forward_messages(self, ws: web.WebSocketResponse):
@@ -334,7 +346,7 @@ class RTMiddleTier:
 
                                 await ws.send_str(new_msg)
                             else:
-                                if self.transfer_conversation and self.init_user_question:
+                                if self.transfer_conversation:
 
                                     temp_system_message = self.system_message
                                     temp_agent_name = self.agent_name
@@ -351,8 +363,6 @@ class RTMiddleTier:
                                     self.backup_tools = temp_tools
                                     self.transfer_conversation = False
                                     await self._reinitialize_state(target_ws)
-                                    print("re-initiating user question")
-                                    await target_ws.send_json(self.init_user_question)
 
                                     await target_ws.send_json({'type': 'response.create'})
 

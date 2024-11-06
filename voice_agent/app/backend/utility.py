@@ -20,6 +20,12 @@ import urllib.request
 import json  
 import os  
 import ssl  
+import os
+import redis
+import pickle
+import base64
+from typing import Dict
+
 
 def load_entity(file_path, entity_name):  
     with open(file_path, 'r') as file:  
@@ -30,8 +36,7 @@ def load_entity(file_path, entity_name):
     return None  
   
 # Load environment variables  
-env_path = Path('./') / '.env'  
-load_dotenv(dotenv_path=env_path)  
+load_dotenv()  
 async_client = AsyncAzureOpenAI(  
     api_key=os.environ.get("AZURE_OPENAI_API_KEY"),  
     api_version=os.getenv("AZURE_OPENAI_API_VERSION"),  
@@ -61,7 +66,7 @@ def allowSelfSignedHttps(allowed):
   
 allowSelfSignedHttps(True)  
   
-async def detect_intent_change_2(current_domain, conversation): 
+async def detect_intent(conversation): 
     start_time = time.time() 
     # Prepare the request data  
 # Format the data according to the ServiceInput schema  
@@ -92,23 +97,44 @@ async def detect_intent_change_2(current_domain, conversation):
     # Make the request  
     req = urllib.request.Request(INTENT_SHIFT_API_URL, body, headers=headers)  
   
-  
+    
     try:  
         response = urllib.request.urlopen(req)  
         result = response.read()
         result = json.loads(result)[0]['0'].strip()
-        print("current domain ", current_domain)
-        print("conversation ", value)
-        print(result)
         end_time = time.time()
         print(f"Job succeeded in {end_time - start_time:.2f} seconds.")
-        if result!=current_domain:
-            return "yes"
-        else:
-            return result
+        return result
         
     except urllib.error.HTTPError as error:  
         print("The request failed with status code: " + str(error.code))  
         print(error.info())  
         print(error.read().decode("utf8", 'ignore'))  
         return None  
+
+class SessionState:  
+    def __init__(self): 
+        # Redis configuration 
+        self.redis_client = None 
+        AZURE_REDIS_ENDPOINT = os.getenv("AZURE_REDIS_ENDPOINT")  
+        AZURE_REDIS_KEY = os.getenv("AZURE_REDIS_KEY")  
+        if AZURE_REDIS_KEY: #use redis
+            self.redis_client = redis.StrictRedis(host=AZURE_REDIS_ENDPOINT, port=6380, password=AZURE_REDIS_KEY, ssl=True)  
+        else: #use in-memory
+            self.session_store: Dict[str, Dict] = {}  
+
+                
+    def get(self, key):  
+        if self.redis_client:
+            self.data = self.redis_client.get(key)  
+            return pickle.loads(base64.b64decode(self.data)) if self.data else None  
+        else:
+            return self.session_store.get(key)
+
+          
+    def set(self, key, value):  
+        if self.redis_client:
+            self.redis_client.set(key, base64.b64encode(pickle.dumps(value)))  
+        else:
+            self.session_store[key]=value
+          
