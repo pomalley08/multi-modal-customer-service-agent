@@ -118,13 +118,18 @@ class Smart_Agent():
         profile_file = f'{base_path}/{agent_name}_profile.yaml'
         with open(profile_file, 'r') as file:  
             profile = yaml.safe_load(file)  
+        self.domain_description = profile["domain_description"]
         common_profile_file = f'{base_path}/common_agent_profile.yaml'
         with open(common_profile_file, 'r') as file:
             common_profile = yaml.safe_load(file)
-
+        if profile.get('default_agent') ==True:
+            self.default_agent = True
+            print("Default agent is set to ", self.name)
+        else:
+            self.default_agent = False
         self.init_history =[{"role":"system", "content":profile["persona"].format(customer_name =user_profile['name'], customer_id=user_profile['customer_id'])}, {"role":"assistant", "content":profile["initial_message"]}]
         self.function_spec = []
-        for tool in profile.get('tools', []):  
+        for tool in profile.get('tools', []):
             self.function_spec.append({        
                 "type": tool['type'], 
                 "function":{ 
@@ -134,6 +139,9 @@ class Smart_Agent():
                 }}
             )
         for tool in common_profile.get('tools', []):  
+            if self.default_agent and tool['name']=="get_help":
+                continue      #default agent will handle everything (supposedly human) so it should not ask for help
+
             self.function_spec.append({        
                 "type": tool['type'],
                 "function":{  
@@ -157,76 +165,84 @@ class Smart_Agent():
             conversation = self.init_history.copy()
         conversation.append({"role": "user", "content": user_input})
         request_help = False
-        while True:
+        if len(self.function_spec)>0:
+            while True:
+
+                response = self.client.chat.completions.create(
+                    model=self.engine, 
+                    messages=conversation,
+                tools=self.function_spec,
+                tool_choice='auto',
+
+                )
+                
+                response_message = response.choices[0].message
+                if response_message.content is None:
+                    response_message.content = ""
+
+                tool_calls = response_message.tool_calls
+                
+
+                print("assistant response: ", response_message.content)
+                # Step 2: check if GPT wanted to call a function
+                if  tool_calls:
+                    conversation.append(response_message)  # extend conversation with assistant's reply
+                    for tool_call in tool_calls:
+                        function_name = tool_call.function.name
+                        print("Recommended Function call:")
+                        print(function_name)
+                        print()                                    
+                        # verify function exists
+                        if function_name not in self.functions_list:
+                            # raise Exception("Function " + function_name + " does not exist")
+                            conversation.pop()
+                            continue
+                        function_to_call = self.functions_list[function_name]
+                        
+                        # verify function has correct number of arguments
+                        function_args = json.loads(tool_call.function.arguments)
+
+                        if self.check_args(function_to_call, function_args) is False:
+                            # raise Exception("Invalid number of arguments for function: " + function_name)
+                            conversation.pop()
+                            continue
+
+                        
+                        # print("beginning function call")
+                        function_response = str(function_to_call(**function_args))
+
+                        if function_name=="get_help": #scenario where the agent asks for help
+                            summary_conversation = []
+                            for message in conversation:
+                                message = dict(message)
+                                if message.get("role") != "system" and message.get("role") != "tool" and len(message.get("content"))>0:
+                                    summary_conversation.append({"role":message.get("role"), "content":message.get("content")})
+                            summary_conversation.pop() #remove the last message which is the agent asking for help
+                            return True, summary_conversation, function_response
+
+                        print("Output of function call:")
+                        print(function_response)
+                        print()
+                    
+                        conversation.append(
+                            {
+                                "tool_call_id": tool_call.id,
+                                "role": "tool",
+                                "name": function_name,
+                                "content": function_response,
+                            }
+                        )  # extend conversation with function response
+                        
+
+                    continue
+                else:
+                    break #if no function call break out of loop as this indicates that the agent finished the research and is ready to respond to the user
+        else:
             response = self.client.chat.completions.create(
                 model=self.engine, 
                 messages=conversation,
-            tools=self.function_spec,
-            tool_choice='auto',
-
-            )
-            
+                )
             response_message = response.choices[0].message
-            if response_message.content is None:
-                response_message.content = ""
-
-            tool_calls = response_message.tool_calls
-            
-
-            print("assistant response: ", response_message.content)
-            # Step 2: check if GPT wanted to call a function
-            if  tool_calls:
-                conversation.append(response_message)  # extend conversation with assistant's reply
-                for tool_call in tool_calls:
-                    function_name = tool_call.function.name
-                    print("Recommended Function call:")
-                    print(function_name)
-                    print()                                    
-                    # verify function exists
-                    if function_name not in self.functions_list:
-                        # raise Exception("Function " + function_name + " does not exist")
-                        conversation.pop()
-                        continue
-                    function_to_call = self.functions_list[function_name]
-                    
-                    # verify function has correct number of arguments
-                    function_args = json.loads(tool_call.function.arguments)
-
-                    if self.check_args(function_to_call, function_args) is False:
-                        # raise Exception("Invalid number of arguments for function: " + function_name)
-                        conversation.pop()
-                        continue
-
-                    
-                    # print("beginning function call")
-                    function_response = str(function_to_call(**function_args))
-
-                    if function_name=="get_help": #scenario where the agent asks for help
-                        summary_conversation = []
-                        for message in conversation:
-                            message = dict(message)
-                            if message.get("role") != "system" and message.get("role") != "tool" and len(message.get("content"))>0:
-                                summary_conversation.append({"role":message.get("role"), "content":message.get("content")})
-                        summary_conversation.pop() #remove the last message which is the agent asking for help
-                        return True, summary_conversation, function_response
-
-                    print("Output of function call:")
-                    print(function_response)
-                    print()
-                
-                    conversation.append(
-                        {
-                            "tool_call_id": tool_call.id,
-                            "role": "tool",
-                            "name": function_name,
-                            "content": function_response,
-                        }
-                    )  # extend conversation with function response
-                    
-
-                continue
-            else:
-                break #if no function call break out of loop as this indicates that the agent finished the research and is ready to respond to the user
 
         conversation.append(response_message)
         assistant_response = response_message.content
