@@ -1,6 +1,6 @@
 # Voice-Agent: An Application Pattern for multi-domain agents and the GPT-4o Realtime API for Audio
 
-![Design pattern 1](app/backend/static/agent_pic.png)
+<video src='../media/voice_agent_demo.mp4'></video>
 
 ## Running this sample
 We'll follow 4 steps to get this example running in your own environment: pre-requisites, creating an index, setting up the environment, and running the app.
